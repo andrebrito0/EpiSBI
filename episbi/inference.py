@@ -392,5 +392,126 @@ class SBIEngine:
         result["abc_history"] = history
         return result
 
+    def run_bsl(
+        self,
+        obs_data,
+        prior,
+        simulator_func: Callable,
+        n_sim_raw: int = 50,
+        min_keep: int = 10,
+        filter_func: Optional[Callable] = None,
+        n_mcmc: int = 1000,
+        burn: int = 200,
+        prop_scale: Optional[np.ndarray] = None,
+        init_theta: Optional[np.ndarray] = None,
+        seed: int = 0,
+        param_names: Optional[Sequence[str]] = None,
+        simulator_kwargs: Optional[Dict] = None,
+        pass_seed: bool = True,
+        n_jobs: int = 1,
+        backend: str = "loky",
+        output_key: str = "observed",
+    ):
+        # Bayesian synthetic likelihood (Wood 2010): at each proposed theta, simulate
+        # a batch, model the summaries jointly as multivariate normal, and use that
+        # as an approximate likelihood inside Metropolis-Hastings. Unlike run_abc,
+        # this does not degrade as more summaries are added, since it models them
+        # jointly rather than distance-matching them one at a time.
+        #
+        # filter_func(row) -> bool lets the caller condition on a subset of simulated
+        # outcomes before estimating the covariance (e.g. "outbreak took off"), which
+        # is often necessary since raw summaries from take-off/fizzle dynamics are
+        # rarely close to normal; conditioning on a realised outcome repairs this and
+        # is principled rather than a post-hoc fix, since only realised outcomes are
+        # ever observed.
+        from scipy.linalg import cholesky, solve_triangular, LinAlgError
+        from .simulation import _theta_to_input, _sim_to_array
+
+        if n_mcmc <= burn:
+            raise ValueError("n_mcmc must be greater than burn.")
+
+        simulator_kwargs = {} if simulator_kwargs is None else simulator_kwargs
+        if param_names is None:
+            param_names = self._param_names(prior)
+
+        obs_arr = _sim_to_array(obs_data, output_key=output_key).reshape(-1).astype(np.float64)
+        low = np.asarray(prior.low, dtype=np.float64)
+        high = np.asarray(prior.high, dtype=np.float64)
+        prop_scale = (
+            np.asarray(prop_scale, dtype=np.float64) if prop_scale is not None else 0.05 * (high - low)
+        )
+
+        rng = np.random.default_rng(seed)
+
+        def _simulate_batch(theta, batch_seed):
+            theta_input = _theta_to_input(theta, param_names)
+            batch_rng = np.random.default_rng(batch_seed)
+            sim_seeds = batch_rng.integers(0, 2**32 - 1, size=n_sim_raw, dtype=np.uint32)
+
+            def _one(sim_seed):
+                kwargs = dict(simulator_kwargs)
+                if pass_seed and "seed" not in kwargs:
+                    kwargs["seed"] = int(sim_seed)
+                arr = _sim_to_array(simulator_func(theta_input, **kwargs), output_key=output_key)
+                return arr.reshape(-1)
+
+            if n_jobs == 1:
+                rows = [_one(s) for s in sim_seeds]
+            else:
+                try:
+                    from joblib import Parallel, delayed
+                except ImportError as exc:
+                    raise ImportError("run_bsl(n_jobs != 1) requires joblib.") from exc
+                rows = Parallel(n_jobs=n_jobs, backend=backend)(delayed(_one)(s) for s in sim_seeds)
+            return np.stack(rows, axis=0).astype(np.float64)
+
+        def _log_synth_lik(theta, batch_seed, scale):
+            S = _simulate_batch(theta, batch_seed)
+            if filter_func is not None:
+                keep = np.array([filter_func(row) for row in S], dtype=bool)
+                S = S[keep]
+            if len(S) < min_keep:
+                return -1e10
+            Sk = S / scale
+            mu = Sk.mean(axis=0)
+            Sig = np.cov(Sk, rowvar=False) + np.eye(Sk.shape[1]) * 1e-6
+            try:
+                L = cholesky(Sig, lower=True)
+            except LinAlgError:
+                return -1e10
+            z = solve_triangular(L, (obs_arr / scale) - mu, lower=True)
+            k = Sk.shape[1]
+            return -0.5 * k * np.log(2 * np.pi) - np.sum(np.log(np.diag(L))) - 0.5 * np.sum(z**2)
+
+        if init_theta is None:
+            init_theta = (low + high) / 2
+        else:
+            init_theta = np.asarray(
+                prior.to_array(init_theta) if hasattr(prior, "to_array") else init_theta, dtype=np.float64
+            )
+        init_theta = np.clip(init_theta, low, high)
+
+        print(f"[*] Running BSL-MCMC: {n_mcmc} steps x {n_sim_raw} sims/step...")
+        pilot = _simulate_batch(init_theta, seed)
+        scale = pilot.std(axis=0)
+        scale[scale == 0] = 1.0
+
+        cur = init_theta
+        cur_ll = _log_synth_lik(cur, seed + 1, scale)
+        chain = np.zeros((n_mcmc, len(param_names)))
+        acc = 0
+        for it in range(n_mcmc):
+            prop = rng.normal(cur, prop_scale)
+            if np.all(prop >= low) and np.all(prop <= high):
+                prop_ll = _log_synth_lik(prop, seed + 2 + it, scale)
+                if np.log(rng.random()) < prop_ll - cur_ll:
+                    cur, cur_ll = prop, prop_ll
+                    acc += 1
+            chain[it] = cur
+
+        samples = pd.DataFrame(chain[burn:], columns=param_names)
+        print(f"      acceptance rate: {100 * acc / n_mcmc:.1f}%")
+        return {"samples": samples, "chain": chain, "acceptance_rate": acc / n_mcmc, "scale": scale}
+
     def sample_posterior(self, posterior, obs_data, num_samples: int = 10000):
         return posterior.sample((num_samples,), x=self._obs_to_tensor(obs_data))
