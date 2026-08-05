@@ -52,7 +52,8 @@ The manuscript materials include three compartmental epidemic models:
 
 ### Main Features
 
-- `SBIEngine` for ABC, NPE, NPE-LSTM, NRE, and PNPE workflows.
+- `SBIEngine` for ABC, NPE, NPE-LSTM, NRE, PNPE, and BSL (Bayesian synthetic likelihood) workflows.
+- `episbi.adjustment.regression_adjust` for post-hoc local-linear or ridge regression adjustment of an accepted ABC sample (Beaumont, Zhang & Balding 2002), reusing simulations already run.
 - `LSTMembedding` for neural inference with time-series observations.
 - Prior helpers for `pyabc` and `sbi` workflows.
 - `simulate_for_sbi` and `sample_prior` utilities for generating simulation datasets.
@@ -68,7 +69,8 @@ The manuscript materials include three compartmental epidemic models:
 | 1. Define a model | Use a built-in epidemic simulator or define a compartment model. | `episbi.models.deterministic_seir`, `episbi.models.stochastic_seir`, `episbi.models.stochastic_seird`, `episbi.models.stochastic_se1e2e3ir`, `episbi.models.compartment_model`, `episbi.models.Transition` |
 | 2. Define a prior | Keep parameter names and bounds in one object. | `episbi.prior.UniformPrior`, `episbi.prior.MixedPrior` |
 | 3. Simulate training data | Generate `(theta, x)` arrays for SBI training. | `episbi.simulation.simulate_for_sbi`, `episbi.simulation.sample_prior` |
-| 4. Fit inference | Run ABC, NPE, NPE-LSTM, NRE, or PNPE. | `SBIEngine.run_abc`, `SBIEngine.run_npe`, `SBIEngine.run_npe_lstm`, `SBIEngine.run_nre`, `SBIEngine.run_pnpe` |
+| 4. Fit inference | Run ABC, NPE, NPE-LSTM, NRE, PNPE, or BSL. | `SBIEngine.run_abc`, `SBIEngine.run_npe`, `SBIEngine.run_npe_lstm`, `SBIEngine.run_nre`, `SBIEngine.run_pnpe`, `SBIEngine.run_bsl` |
+| 4b. Sharpen an ABC sample (optional) | Post-hoc regression adjustment reusing simulations `run_abc` already ran, at no extra simulation cost. | `episbi.adjustment.regression_adjust` |
 | 5. Generate posterior predictive samples | Re-simulate trajectories from posterior samples. | `episbi.forecasting.posterior_predictive_forecast`, `episbi.forecasting.run_posterior_forecast_evaluation` |
 | 6. Evaluate predictions | Compute trajectory summaries, WIS, interval score, RMSE, MAE, and coverage. | `episbi.metric.summarize_trajectories`, `episbi.metric.evaluate_trajectory`, `episbi.metric.evaluate_prediction_windows`, `episbi.metric.weighted_interval_score`, `episbi.metric.save_metrics`, `episbi.metric.summarize_metrics_by_output` |
 | 7. Plot checks | Draw posterior predictive checks and inference/forecast windows. | `episbi.utils.plot_prediction_windows`, `episbi.forecasting.plot_forecast_result` |
